@@ -27,6 +27,22 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+def get_instance_names(cli="easytier-cli"):
+    cmd = [cli, "peer", "list"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            return []
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+    names = []
+    for line in r.stdout.splitlines():
+        m = re.match(r"==\s+(\S+)\s+", line)
+        if m:
+            names.append(m.group(1))
+    return names
+
+
 def get_peer_ips(cli="easytier-cli", instance_name=None):
     cmd = [cli]
     if instance_name:
@@ -101,15 +117,21 @@ def ts():
 
 
 def run(args):
-    inst_info = f"instances={args.instance_names}" if args.instance_names else "instances=all"
+    instance_names = args.instance_names
+    if not instance_names:
+        instance_names = get_instance_names(args.cli)
+    inst_info = f"instances={instance_names}" if instance_names else "instances=none(found)"
     print(f"[{ts()}] EasyTier monitor started — "
           f"interval={args.interval}s threshold={args.threshold} "
           f"{inst_info} restart_cmd='{args.restart_cmd}'")
+    if not instance_names:
+        print(f"[{ts()}] No instances found, exiting")
+        return
     failures = 0
 
     while True:
         ok = check_network(
-            cli=args.cli, instance_names=args.instance_names,
+            cli=args.cli, instance_names=instance_names,
             ping_timeout=args.ping_timeout, ping_count=args.ping_count,
         )
         if ok:
