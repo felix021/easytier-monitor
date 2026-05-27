@@ -160,16 +160,21 @@ def run(args):
         )
         if ok:
             if failures:
-                log.info(f"Recovered after {failures} failures")
+                log.warning(f"Network recovered after {failures} consecutive failures")
             failures = 0
         else:
             failures += 1
-            log.info(f"Network check failed ({failures}/{args.threshold})")
+            failed = [n or "default" for n in instance_names
+                      if not check_instance(args.cli, n, args.ping_timeout, args.ping_count, 16)]
+            log.warning(f"Network check failed ({failures}/{args.threshold}) — "
+                        f"unreachable instances: {failed}")
             if failures >= args.threshold:
+                log.error(f"Restarting EasyTier after {failures} consecutive failures — "
+                          f"unreachable: {failed}")
                 try:
                     restart_service(args.restart_cmd)
                 except subprocess.CalledProcessError as e:
-                    log.info(f"Restart failed: {e.stderr or e}")
+                    log.error(f"Restart failed: {e.stderr or e}")
                     failures = 0
                     continue
                 failures = 0
