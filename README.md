@@ -37,6 +37,30 @@ python monitor.py --restart-cmd "D:\programs\easytier\win-sw\WinSW-x64.exe resta
 
 WinSW manages the service lifecycle directly, no admin elevation needed (unlike `net stop/start`).
 
+### Installing the monitor itself as a WinSW service
+
+Create a WinSW XML config (e.g. `easytier-monitor.xml`) next to your `WinSW-x64.exe`:
+
+```xml
+<service>
+  <id>easytier-monitor</id>
+  <name>easytier-monitor</name>
+  <description>EasyTier health monitor - auto-restart on consecutive failures</description>
+  <dependsOn>easytier</dependsOn>
+  <workingdirectory>D:\path\to\easytier-monitor\</workingdirectory>
+  <executable>C:\Python310\python.exe</executable>
+  <arguments>-u monitor.py --cli D:\path\to\easytier-cli.exe --log-file D:\path\to\easytier-monitor\logs\monitor.log --restart-cmd "D:\path\to\WinSW-x64.exe restart D:\path\to\easytier.xml"</arguments>
+  <logpath>D:\path\to\easytier-monitor\logs</logpath>
+  <log mode="roll-by-size"></log>
+</service>
+```
+
+Key points:
+- `--dependsOn` ensures the monitor starts after EasyTier
+- `--cli` must be an absolute path since the service runs as LocalSystem with a limited PATH
+- `--log-file` writes monitor logs directly to a file (recommended for service mode)
+- `--restart-cmd` uses the same WinSW executable to restart the EasyTier service
+
 ## Linux (systemd)
 
 ```bash

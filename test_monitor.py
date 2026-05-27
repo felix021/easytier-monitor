@@ -89,7 +89,7 @@ class TestGetPeerIPs(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=0, stdout=CLI_OUTPUT)
         monitor.get_peer_ips(cli="/custom/cli")
         mock_run.assert_called_once_with(
-            ["/custom/cli", "peer", "list"], capture_output=True, text=True
+            ["/custom/cli", "peer", "list"], capture_output=True, text=True, timeout=10
         )
 
     @patch("subprocess.run")
@@ -97,7 +97,7 @@ class TestGetPeerIPs(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=0, stdout=CLI_OUTPUT)
         monitor.get_peer_ips(cli="easytier-cli", instance_name="net1")
         mock_run.assert_called_once_with(
-            ["easytier-cli", "-n", "net1", "peer", "list"], capture_output=True, text=True
+            ["easytier-cli", "-n", "net1", "peer", "list"], capture_output=True, text=True, timeout=10
         )
 
     @patch("subprocess.run")
@@ -105,24 +105,30 @@ class TestGetPeerIPs(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=0, stdout=CLI_OUTPUT)
         monitor.get_peer_ips(cli="easytier-cli", instance_name=None)
         mock_run.assert_called_once_with(
-            ["easytier-cli", "peer", "list"], capture_output=True, text=True
+            ["easytier-cli", "peer", "list"], capture_output=True, text=True, timeout=10
         )
 
 
 class TestCheckPing(unittest.TestCase):
-    @patch("subprocess.run")
-    def test_ping_success(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0)
+    @patch("subprocess.Popen")
+    def test_ping_success(self, mock_popen):
+        mock_proc = MagicMock(returncode=0)
+        mock_proc.wait.return_value = None
+        mock_popen.return_value = mock_proc
         self.assertTrue(monitor.check_ping("10.196.0.169", timeout=2, count=1))
 
-    @patch("subprocess.run")
-    def test_ping_failure(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1)
+    @patch("subprocess.Popen")
+    def test_ping_failure(self, mock_popen):
+        mock_proc = MagicMock(returncode=1)
+        mock_proc.wait.return_value = None
+        mock_popen.return_value = mock_proc
         self.assertFalse(monitor.check_ping("10.196.0.169", timeout=2, count=1))
 
-    @patch("subprocess.run")
-    def test_ping_timeout(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=2)
+    @patch("subprocess.Popen")
+    def test_ping_timeout(self, mock_popen):
+        mock_proc = MagicMock(returncode=2)
+        mock_proc.wait.return_value = None
+        mock_popen.return_value = mock_proc
         self.assertFalse(monitor.check_ping("10.196.0.169", timeout=2, count=1))
 
 

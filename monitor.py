@@ -2,13 +2,28 @@
 """EasyTier health monitor — auto-restart on consecutive network failures."""
 
 import argparse
+import logging
 import platform
 import re
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 IS_WINDOWS = platform.system() == "Windows"
+
+log = logging.getLogger("easytier-monitor")
+
+
+def setup_logging(log_file=None):
+    log.setLevel(logging.INFO)
+    fmt = logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    handlers = [logging.StreamHandler(sys.stdout)]
+    if log_file:
+        handlers.append(logging.FileHandler(log_file))
+    for h in handlers:
+        h.setFormatter(fmt)
+        log.addHandler(h)
 
 
 def parse_args(argv=None):
@@ -20,6 +35,7 @@ def parse_args(argv=None):
     p.add_argument("--cooldown", type=int, default=30, help="Seconds to wait after restart (default: 30)")
     p.add_argument("--restart-cmd", default="systemctl restart easytier",
                    help="Shell command to restart EasyTier (default: 'systemctl restart easytier')")
+    p.add_argument("--log-file", help="Write logs to this file in addition to stdout")
     p.add_argument("--cli", default="easytier-cli", help="Path to easytier-cli (default: easytier-cli)")
     p.add_argument("--instance-name", dest="instance_names", action="append", default=[],
                    help="Instance name to monitor (repeatable, e.g. --instance-name net1 --instance-name net2). "
@@ -49,7 +65,7 @@ def get_peer_ips(cli="easytier-cli", instance_name=None):
         cmd += ["-n", instance_name]
     cmd += ["peer", "list"]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             return []
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -73,13 +89,18 @@ def _ping_cmd(target, timeout=2, count=1):
 
 def check_ping(target, timeout=2, count=1):
     try:
-        r = subprocess.run(
-            _ping_cmd(target, timeout, count),
-            stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            timeout=(timeout * count + 5),
-        )
+        cmd = _ping_cmd(target, timeout, count)
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            proc.communicate(timeout=(timeout * count + 5))
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return False
+        return proc.returncode == 0
         return r.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except (subprocess.TimeoutExpired, OSError):
         return False
 
 
@@ -107,9 +128,9 @@ def check_network(cli="easytier-cli", instance_names=None, ping_timeout=2, ping_
 
 
 def restart_service(restart_cmd):
-    print(f"[{ts()}] Executing: {restart_cmd}")
+    log.info(f"Executing: {restart_cmd}")
     subprocess.run(restart_cmd, shell=True, check=True, capture_output=True, text=True)
-    print(f"[{ts()}] Restart done")
+    log.info("Restart done")
 
 
 def ts():
@@ -121,11 +142,11 @@ def run(args):
     if not instance_names:
         instance_names = get_instance_names(args.cli)
     inst_info = f"instances={instance_names}" if instance_names else "instances=none(found)"
-    print(f"[{ts()}] EasyTier monitor started — "
-          f"interval={args.interval}s threshold={args.threshold} "
-          f"{inst_info} restart_cmd='{args.restart_cmd}'")
+    log.info(f"EasyTier monitor started — "
+             f"interval={args.interval}s threshold={args.threshold} "
+             f"{inst_info} restart_cmd='{args.restart_cmd}'")
     if not instance_names:
-        print(f"[{ts()}] No instances found, exiting")
+        log.info("No instances found, exiting")
         return
     failures = 0
 
@@ -136,20 +157,20 @@ def run(args):
         )
         if ok:
             if failures:
-                print(f"[{ts()}] Recovered after {failures} failures")
+                log.info(f"Recovered after {failures} failures")
             failures = 0
         else:
             failures += 1
-            print(f"[{ts()}] Network check failed ({failures}/{args.threshold})")
+            log.info(f"Network check failed ({failures}/{args.threshold})")
             if failures >= args.threshold:
                 try:
                     restart_service(args.restart_cmd)
                 except subprocess.CalledProcessError as e:
-                    print(f"[{ts()}] Restart failed: {e.stderr or e}")
+                    log.info(f"Restart failed: {e.stderr or e}")
                     failures = 0
                     continue
                 failures = 0
-                print(f"[{ts()}] Cooling down {args.cooldown}s...")
+                log.info(f"Cooling down {args.cooldown}s...")
                 time.sleep(args.cooldown)
                 continue
 
@@ -157,4 +178,6 @@ def run(args):
 
 
 if __name__ == "__main__":
-    run(parse_args())
+    args = parse_args()
+    setup_logging(args.log_file)
+    run(args)
