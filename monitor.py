@@ -141,6 +141,9 @@ def run(args):
     instance_names = args.instance_names
     if not instance_names:
         instance_names = get_instance_names(args.cli)
+    if not instance_names:
+        if get_peer_ips(args.cli):
+            instance_names = [None]
     inst_info = f"instances={instance_names}" if instance_names else "instances=none(found)"
     log.info(f"EasyTier monitor started — "
              f"interval={args.interval}s threshold={args.threshold} "
