@@ -99,7 +99,6 @@ def check_ping(target, timeout=2, count=1):
             proc.communicate()
             return False
         return proc.returncode == 0
-        return r.returncode == 0
     except (subprocess.TimeoutExpired, OSError):
         return False
 
@@ -120,11 +119,24 @@ def check_instance(cli, instance_name, ping_timeout, ping_count, max_workers):
 
 def check_network(cli="easytier-cli", instance_names=None, ping_timeout=2, ping_count=1, max_workers=16):
     if not instance_names:
-        return check_instance(cli, None, ping_timeout, ping_count, max_workers)
-    return all(
-        check_instance(cli, name, ping_timeout, ping_count, max_workers)
-        for name in instance_names
-    )
+        ok = check_instance(cli, None, ping_timeout, ping_count, max_workers)
+        return ok, [] if ok else [None]
+    failed = [name for name in instance_names
+              if not check_instance(cli, name, ping_timeout, ping_count, max_workers)]
+    return not failed, failed
+
+
+def _discover_instances(cli):
+    names = get_instance_names(cli)
+    if names:
+        return names
+    if get_peer_ips(cli):
+        return [None]
+    return []
+
+
+def _display_name(n):
+    return n or "(default)"
 
 
 def restart_service(restart_cmd):
@@ -138,23 +150,41 @@ def ts():
 
 
 def run(args):
-    instance_names = args.instance_names
-    if not instance_names:
-        instance_names = get_instance_names(args.cli)
-    if not instance_names:
-        if get_peer_ips(args.cli):
-            instance_names = [None]
-    inst_info = f"instances={instance_names}" if instance_names else "instances=none(found)"
+    auto_discover = not args.instance_names
+    if auto_discover:
+        instance_names = _discover_instances(args.cli)
+    else:
+        instance_names = list(args.instance_names)
+
+    inst_info = (f"instances={[_display_name(n) for n in instance_names]}"
+                 if instance_names else "no instances found")
     log.info(f"EasyTier monitor started — "
              f"interval={args.interval}s threshold={args.threshold} "
              f"{inst_info} restart_cmd='{args.restart_cmd}'")
     if not instance_names:
         log.info("No instances found, exiting")
         return
+
     failures = 0
 
     while True:
-        ok = check_network(
+        if auto_discover:
+            refreshed = _discover_instances(args.cli)
+            if refreshed != instance_names:
+                added = [n for n in refreshed if n not in instance_names]
+                removed = [n for n in instance_names if n not in refreshed]
+                if added:
+                    log.info(f"Instances added: {[_display_name(n) for n in added]}")
+                if removed:
+                    log.info(f"Instances removed: {[_display_name(n) for n in removed]}")
+                instance_names = refreshed
+            if not instance_names:
+                log.warning("All instances gone, waiting for recovery")
+                failures = 0
+                time.sleep(args.interval)
+                continue
+
+        ok, failed_instances = check_network(
             cli=args.cli, instance_names=instance_names,
             ping_timeout=args.ping_timeout, ping_count=args.ping_count,
         )
@@ -164,13 +194,12 @@ def run(args):
             failures = 0
         else:
             failures += 1
-            failed = [n or "default" for n in instance_names
-                      if not check_instance(args.cli, n, args.ping_timeout, args.ping_count, 16)]
+            failed_display = [_display_name(n) for n in failed_instances]
             log.warning(f"Network check failed ({failures}/{args.threshold}) — "
-                        f"unreachable instances: {failed}")
+                        f"unreachable: {failed_display}")
             if failures >= args.threshold:
                 log.error(f"Restarting EasyTier after {failures} consecutive failures — "
-                          f"unreachable: {failed}")
+                          f"unreachable: {failed_display}")
                 try:
                     restart_service(args.restart_cmd)
                 except subprocess.CalledProcessError as e:

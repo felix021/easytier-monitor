@@ -177,44 +177,56 @@ class TestCheckInstance(unittest.TestCase):
 
 class TestCheckNetwork(unittest.TestCase):
     @patch.object(monitor, "check_instance")
-    def test_no_instance_names_delegates(self, mock_ci):
+    def test_no_instance_names_ok(self, mock_ci):
         mock_ci.return_value = True
         result = monitor.check_network(cli="cli", instance_names=None, ping_timeout=2, ping_count=1)
-        self.assertTrue(result)
+        self.assertEqual(result, (True, []))
         mock_ci.assert_called_once_with("cli", None, 2, 1, 16)
 
     @patch.object(monitor, "check_instance")
-    def test_empty_list_delegates(self, mock_ci):
+    def test_no_instance_names_fail(self, mock_ci):
+        mock_ci.return_value = False
+        result = monitor.check_network(cli="cli", instance_names=None, ping_timeout=2, ping_count=1)
+        self.assertEqual(result, (False, [None]))
+
+    @patch.object(monitor, "check_instance")
+    def test_empty_list_ok(self, mock_ci):
         mock_ci.return_value = True
         result = monitor.check_network(cli="cli", instance_names=[], ping_timeout=2, ping_count=1)
-        self.assertTrue(result)
+        self.assertEqual(result, (True, []))
         mock_ci.assert_called_once_with("cli", None, 2, 1, 16)
 
     @patch.object(monitor, "check_instance")
-    def test_single_instance(self, mock_ci):
+    def test_single_instance_ok(self, mock_ci):
         mock_ci.return_value = True
         result = monitor.check_network(cli="cli", instance_names=["net1"], ping_timeout=2, ping_count=1)
-        self.assertTrue(result)
+        self.assertEqual(result, (True, []))
         mock_ci.assert_called_once_with("cli", "net1", 2, 1, 16)
+
+    @patch.object(monitor, "check_instance")
+    def test_single_instance_fail(self, mock_ci):
+        mock_ci.return_value = False
+        result = monitor.check_network(cli="cli", instance_names=["net1"], ping_timeout=2, ping_count=1)
+        self.assertEqual(result, (False, ["net1"]))
 
     @patch.object(monitor, "check_instance")
     def test_multiple_instances_all_ok(self, mock_ci):
         mock_ci.return_value = True
         result = monitor.check_network(cli="cli", instance_names=["net1", "net2"], ping_timeout=2, ping_count=1)
-        self.assertTrue(result)
+        self.assertEqual(result, (True, []))
         self.assertEqual(mock_ci.call_count, 2)
 
     @patch.object(monitor, "check_instance")
     def test_multiple_instances_one_fails(self, mock_ci):
         mock_ci.side_effect = [True, False]
         result = monitor.check_network(cli="cli", instance_names=["net1", "net2"], ping_timeout=2, ping_count=1)
-        self.assertFalse(result)
+        self.assertEqual(result, (False, ["net2"]))
 
     @patch.object(monitor, "check_instance")
     def test_multiple_instances_all_fail(self, mock_ci):
         mock_ci.return_value = False
         result = monitor.check_network(cli="cli", instance_names=["net1", "net2"], ping_timeout=2, ping_count=1)
-        self.assertFalse(result)
+        self.assertEqual(result, (False, ["net1", "net2"]))
 
 
 class TestRestartService(unittest.TestCase):
@@ -246,8 +258,10 @@ class TestMonitorLoop(unittest.TestCase):
     @patch("time.sleep")
     @patch.object(monitor, "restart_service")
     @patch.object(monitor, "check_network")
-    def test_no_restart_on_success(self, mock_net, mock_restart, mock_sleep, mock_print):
-        mock_net.return_value = True
+    @patch.object(monitor, "_discover_instances")
+    def test_no_restart_on_success(self, mock_discover, mock_net, mock_restart, mock_sleep, mock_print):
+        mock_discover.return_value = [None]
+        mock_net.return_value = (True, [])
         args = monitor.parse_args(["--threshold", "3"])
         call_count = [0]
 
@@ -267,8 +281,10 @@ class TestMonitorLoop(unittest.TestCase):
     @patch("time.sleep")
     @patch.object(monitor, "restart_service")
     @patch.object(monitor, "check_network")
-    def test_restart_after_threshold(self, mock_net, mock_restart, mock_sleep, mock_print):
-        mock_net.return_value = False
+    @patch.object(monitor, "_discover_instances")
+    def test_restart_after_threshold(self, mock_discover, mock_net, mock_restart, mock_sleep, mock_print):
+        mock_discover.return_value = [None]
+        mock_net.return_value = (False, [None])
         mock_restart.return_value = None
         args = monitor.parse_args(["--threshold", "3"])
         call_count = [0]
@@ -289,8 +305,10 @@ class TestMonitorLoop(unittest.TestCase):
     @patch("time.sleep")
     @patch.object(monitor, "restart_service")
     @patch.object(monitor, "check_network")
-    def test_failure_counter_resets_on_success(self, mock_net, mock_restart, mock_sleep, mock_print):
-        results = [False, False, True, False, False]
+    @patch.object(monitor, "_discover_instances")
+    def test_failure_counter_resets_on_success(self, mock_discover, mock_net, mock_restart, mock_sleep, mock_print):
+        mock_discover.return_value = [None]
+        results = [(False, [None]), (False, [None]), (True, []), (False, [None]), (False, [None])]
         mock_net.side_effect = results
         mock_restart.return_value = None
         args = monitor.parse_args(["--threshold", "3"])
@@ -312,8 +330,10 @@ class TestMonitorLoop(unittest.TestCase):
     @patch("time.sleep")
     @patch.object(monitor, "restart_service")
     @patch.object(monitor, "check_network")
-    def test_restart_recovers(self, mock_net, mock_restart, mock_sleep, mock_print):
-        results = iter([False, False, False, True, True])
+    @patch.object(monitor, "_discover_instances")
+    def test_restart_recovers(self, mock_discover, mock_net, mock_restart, mock_sleep, mock_print):
+        mock_discover.return_value = [None]
+        results = iter([(False, [None]), (False, [None]), (False, [None]), (True, []), (True, [])])
         mock_net.side_effect = lambda *a, **kw: next(results)
         mock_restart.return_value = None
         args = monitor.parse_args(["--threshold", "3", "--cooldown", "5"])
@@ -336,7 +356,7 @@ class TestMonitorLoop(unittest.TestCase):
     @patch.object(monitor, "restart_service")
     @patch.object(monitor, "check_network")
     def test_passes_instance_names_to_check_network(self, mock_net, mock_restart, mock_sleep, mock_print):
-        mock_net.return_value = True
+        mock_net.return_value = (True, [])
         args = monitor.parse_args(["--instance-name", "net1", "--instance-name", "net2"])
         call_count = [0]
 
@@ -353,6 +373,55 @@ class TestMonitorLoop(unittest.TestCase):
         mock_net.assert_called_once()
         _, kwargs = mock_net.call_args
         self.assertEqual(kwargs["instance_names"], ["net1", "net2"])
+
+    @patch("builtins.print")
+    @patch("time.sleep")
+    @patch.object(monitor, "restart_service")
+    @patch.object(monitor, "check_network")
+    @patch.object(monitor, "_discover_instances")
+    def test_refreshes_instances_when_one_removed(self, mock_discover, mock_net, mock_restart, mock_sleep, mock_print):
+        mock_discover.side_effect = [["net1", "net2"], ["net1"], ["net1"], ["net1"]]
+        mock_net.return_value = (True, [])
+        args = monitor.parse_args(["--threshold", "3"])
+        call_count = [0]
+
+        def sleep_side_effect(_):
+            call_count[0] += 1
+            if call_count[0] >= 3:
+                raise KeyboardInterrupt
+
+        mock_sleep.side_effect = sleep_side_effect
+        try:
+            monitor.run(args)
+        except KeyboardInterrupt:
+            pass
+        # After refresh, check_network should use ["net1"] only
+        last_call = mock_net.call_args_list[-1]
+        self.assertEqual(last_call[1]["instance_names"], ["net1"])
+        mock_restart.assert_not_called()
+
+    @patch("builtins.print")
+    @patch("time.sleep")
+    @patch.object(monitor, "restart_service")
+    @patch.object(monitor, "check_network")
+    @patch.object(monitor, "_discover_instances")
+    def test_all_instances_removed_waits(self, mock_discover, mock_net, mock_restart, mock_sleep, mock_print):
+        mock_discover.side_effect = [["net1"], [], []]
+        args = monitor.parse_args(["--threshold", "3"])
+        call_count = [0]
+
+        def sleep_side_effect(_):
+            call_count[0] += 1
+            if call_count[0] >= 2:
+                raise KeyboardInterrupt
+
+        mock_sleep.side_effect = sleep_side_effect
+        try:
+            monitor.run(args)
+        except KeyboardInterrupt:
+            pass
+        mock_restart.assert_not_called()
+        mock_net.assert_not_called()
 
 
 if __name__ == "__main__":
