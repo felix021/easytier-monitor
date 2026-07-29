@@ -46,7 +46,7 @@ def parse_args(argv=None):
 def get_instance_names(cli="easytier-cli"):
     cmd = [cli, "peer", "list"]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             return []
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -179,10 +179,13 @@ def run(args):
                     log.info(f"Instances removed: {[_display_name(n) for n in removed]}")
                 instance_names = refreshed
             if not instance_names:
-                log.warning("All instances gone, waiting for recovery")
-                failures = 0
-                time.sleep(args.interval)
-                continue
+                # Discovery returned nothing while running — normally that means
+                # easytier-cli cannot reach the RPC portal, i.e. easytier is
+                # hung/deadlocked (process alive, RPC dead). Probe via check_network
+                # so this counts as a failure and can trigger a restart, instead of
+                # waiting forever while the network stays down.
+                log.warning("No instances discovered (cli/RPC unreachable?), probing as failure")
+                instance_names = [None]
 
         ok, failed_instances = check_network(
             cli=args.cli, instance_names=instance_names,

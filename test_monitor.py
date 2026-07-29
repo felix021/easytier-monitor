@@ -405,8 +405,11 @@ class TestMonitorLoop(unittest.TestCase):
     @patch.object(monitor, "restart_service")
     @patch.object(monitor, "check_network")
     @patch.object(monitor, "_discover_instances")
-    def test_all_instances_removed_waits(self, mock_discover, mock_net, mock_restart, mock_sleep, mock_print):
+    def test_all_instances_removed_probes_as_failure(self, mock_discover, mock_net, mock_restart, mock_sleep, mock_print):
+        # Discovery returning empty mid-run means cli/RPC is unreachable (easytier
+        # hung). The monitor must still probe via check_network so it can restart.
         mock_discover.side_effect = [["net1"], [], []]
+        mock_net.return_value = (False, [None])
         args = monitor.parse_args(["--threshold", "3"])
         call_count = [0]
 
@@ -420,8 +423,8 @@ class TestMonitorLoop(unittest.TestCase):
             monitor.run(args)
         except KeyboardInterrupt:
             pass
-        mock_restart.assert_not_called()
-        mock_net.assert_not_called()
+        mock_net.assert_called()
+        mock_restart.assert_not_called()  # only 2 failures, below threshold 3
 
 
 if __name__ == "__main__":
