@@ -18,14 +18,25 @@ python monitor.py [options]
 | `--restart-cmd` | `systemctl restart easytier` | Shell command to restart EasyTier |
 | `--cli` | `easytier-cli` | Path to easytier-cli |
 | `--instance-name` | (auto-detect) | Instance name to monitor (repeatable) |
+| `--fd-unit` | (disabled) | systemd unit whose MainPID's fd usage is checked against its soft `RLIMIT_NOFILE` (e.g. `easytier.service`). Linux only |
+| `--fd-threshold` | 70 | fd usage percentage of the soft limit treated as failure |
 
 ## How It Works
 
-1. Auto-discovers all EasyTier instances via `easytier-cli peer list`
+1. Auto-discovers all EasyTier instances via `easytier-cli peer list` (retries until discovery succeeds at startup, instead of exiting when EasyTier's RPC portal isn't ready yet)
 2. For each instance, extracts peer IPs and pings them in parallel
 3. An instance is considered healthy if **any** peer responds
-4. The overall check passes only if **all** instances are healthy
+4. The overall check passes only if **all** instances are healthy (and, with `--fd-unit`, fd usage stays below `--fd-threshold`% of the soft limit)
 5. After `--threshold` consecutive failures, executes `--restart-cmd`
+
+## Why the fd check
+
+With `enable_kcp_proxy`, EasyTier terminates proxied TCP flows in userspace and
+re-dials them from the receiving node, holding one fd per flow — and leaked
+flows accumulate (observed ~987 over 18 days on one node). When the fd pool
+hits the soft `RLIMIT_NOFILE`, every new TCP flow dies with EMFILE while ICMP
+and the control plane stay green, so ping-based checks alone never notice. The
+fd check catches this before exhaustion; restarting EasyTier clears the leak.
 
 ## Windows with WinSW
 

@@ -3,6 +3,7 @@
 
 import argparse
 import logging
+import os
 import platform
 import re
 import subprocess
@@ -40,6 +41,11 @@ def parse_args(argv=None):
     p.add_argument("--instance-name", dest="instance_names", action="append", default=[],
                    help="Instance name to monitor (repeatable, e.g. --instance-name net1 --instance-name net2). "
                         "Omit to check all instances without filter.")
+    p.add_argument("--fd-unit", default="",
+                   help="systemd unit whose MainPID's fd usage is checked against its soft limit "
+                        "(e.g. easytier.service). Empty (default) disables the check. Linux only.")
+    p.add_argument("--fd-threshold", type=int, default=70,
+                   help="fd usage percentage of the soft limit treated as failure (default: 70)")
     return p.parse_args(argv)
 
 
@@ -103,6 +109,63 @@ def check_ping(target, timeout=2, count=1):
         return False
 
 
+def get_service_pid(unit="easytier.service"):
+    """Return the MainPID of a systemd unit, or None if unavailable (non-systemd, stopped...)."""
+    if IS_WINDOWS:
+        return None
+    try:
+        r = subprocess.run(["systemctl", "show", unit, "--property=MainPID", "--value"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return None
+        return int(r.stdout.strip() or 0) or None
+    except (FileNotFoundError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+_fd_unavailable_warned = False
+
+
+def check_fd_usage(unit="", threshold_pct=70):
+    """Check fd usage of the unit's main process against its soft RLIMIT_NOFILE.
+
+    Returns (ok, message). Unavailable (no unit, Windows, pid/fd not readable)
+    counts as ok — this check must not fail the health verdict on its own errors.
+    Catches exhaustion of EasyTier's fd pool: with KCP proxy enabled new TCP
+    flows need a fresh socket on the receiving side, and EMFILE there kills
+    connections while ICMP/peer checks stay green.
+    """
+    global _fd_unavailable_warned
+    if IS_WINDOWS or not unit:
+        return True, ""
+    pid = get_service_pid(unit)
+    if not pid:
+        return True, ""
+    try:
+        fds = len(os.listdir(f"/proc/{pid}/fd"))
+        with open(f"/proc/{pid}/limits") as f:
+            limits = f.read()
+    except OSError as e:
+        # Configured but unreadable (e.g. monitor not running as root) would
+        # otherwise silently no-op forever — warn once so it gets noticed.
+        if not _fd_unavailable_warned:
+            _fd_unavailable_warned = True
+            log.warning(f"fd check for {unit} (pid {pid}) unavailable: {e}; skipping")
+        return True, ""
+    soft = 0
+    for line in limits.splitlines():
+        if line.startswith("Max open files"):
+            parts = line.split()
+            if len(parts) >= 4:
+                soft = int(parts[3])
+            break
+    if not soft:
+        return True, ""
+    if fds >= soft * threshold_pct / 100.0:
+        return False, f"{unit} pid {pid} fd usage {fds}/{soft} ({fds * 100 // soft}% >= {threshold_pct}%)"
+    return True, ""
+
+
 def check_instance(cli, instance_name, ping_timeout, ping_count, max_workers):
     peers = get_peer_ips(cli=cli, instance_name=instance_name)
     if not peers:
@@ -157,13 +220,23 @@ def run(args):
         instance_names = list(args.instance_names)
 
     inst_info = (f"instances={[_display_name(n) for n in instance_names]}"
-                 if instance_names else "no instances found")
+                 if instance_names else "no instances found yet")
+    fd_info = f" fd_unit={args.fd_unit}@{args.fd_threshold}%" if args.fd_unit else ""
     log.info(f"EasyTier monitor started — "
              f"interval={args.interval}s threshold={args.threshold} "
-             f"{inst_info} restart_cmd='{args.restart_cmd}'")
-    if not instance_names:
-        log.info("No instances found, exiting")
-        return
+             f"{inst_info}{fd_info} restart_cmd='{args.restart_cmd}'")
+
+    # Startup race: easytier.service may still be initializing (RPC portal not
+    # ready), so an empty first discovery must not exit the daemon — retry.
+    # A clean exit here is unrecoverable under Restart=on-failure.
+    retried = False
+    while not instance_names:
+        retried = True
+        log.warning("No instances discovered (easytier RPC not ready?), retrying...")
+        time.sleep(args.interval)
+        instance_names = _discover_instances(args.cli)
+    if retried:
+        log.info(f"Instances discovered: {[_display_name(n) for n in instance_names]}")
 
     failures = 0
 
@@ -191,6 +264,10 @@ def run(args):
             cli=args.cli, instance_names=instance_names,
             ping_timeout=args.ping_timeout, ping_count=args.ping_count,
         )
+        fd_ok, fd_msg = check_fd_usage(args.fd_unit, args.fd_threshold)
+        if not fd_ok:
+            ok = False
+            log.warning(f"FD check failed: {fd_msg}")
         if ok:
             if failures:
                 log.warning(f"Network recovered after {failures} consecutive failures")
