@@ -451,6 +451,30 @@ class TestGetServicePid(unittest.TestCase):
     def test_windows_skipped(self):
         self.assertIsNone(monitor.get_service_pid("easytier.service"))
 
+    @patch("subprocess.run")
+    def test_docker_prefix_inspects_container(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="12345\n")
+        self.assertEqual(monitor.get_service_pid("docker:easytier"), 12345)
+        mock_run.assert_called_once_with(
+            ["docker", "inspect", "-f", "{{.State.Pid}}", "easytier"],
+            capture_output=True, text=True, timeout=10,
+        )
+
+    @patch("subprocess.run")
+    def test_docker_prefix_zero_pid(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="0\n")
+        self.assertIsNone(monitor.get_service_pid("docker:easytier"))
+
+    @patch("subprocess.run")
+    def test_docker_prefix_inspect_failure(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="no such container")
+        self.assertIsNone(monitor.get_service_pid("docker:easytier"))
+
+    @patch("subprocess.run")
+    def test_docker_prefix_empty_name(self, mock_run):
+        self.assertIsNone(monitor.get_service_pid("docker:"))
+        mock_run.assert_not_called()
+
 
 class TestCheckFdUsage(unittest.TestCase):
     LIMITS = "Max open files            1024                524288              files\n"

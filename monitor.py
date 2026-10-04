@@ -110,9 +110,26 @@ def check_ping(target, timeout=2, count=1):
 
 
 def get_service_pid(unit="easytier.service"):
-    """Return the MainPID of a systemd unit, or None if unavailable (non-systemd, stopped...)."""
+    """Return the MainPID of a systemd unit, or None if unavailable (non-systemd, stopped...).
+
+    unit may be "docker:<container-name>" for containerized EasyTier — the
+    container's host-side PID is returned, so /proc checks work from a monitor
+    running on the host.
+    """
     if IS_WINDOWS:
         return None
+    if unit.startswith("docker:"):
+        name = unit[len("docker:"):]
+        if not name:
+            return None
+        try:
+            r = subprocess.run(["docker", "inspect", "-f", "{{.State.Pid}}", name],
+                               capture_output=True, text=True, timeout=10)
+            if r.returncode != 0:
+                return None
+            return int(r.stdout.strip() or 0) or None
+        except (FileNotFoundError, ValueError, subprocess.TimeoutExpired):
+            return None
     try:
         r = subprocess.run(["systemctl", "show", unit, "--property=MainPID", "--value"],
                            capture_output=True, text=True, timeout=10)

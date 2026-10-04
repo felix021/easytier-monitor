@@ -18,7 +18,7 @@ python monitor.py [options]
 | `--restart-cmd` | `systemctl restart easytier` | Shell command to restart EasyTier |
 | `--cli` | `easytier-cli` | Path to easytier-cli |
 | `--instance-name` | (auto-detect) | Instance name to monitor (repeatable) |
-| `--fd-unit` | (disabled) | systemd unit whose MainPID's fd usage is checked against its soft `RLIMIT_NOFILE` (e.g. `easytier.service`). Linux only |
+| `--fd-unit` | (disabled) | systemd unit whose MainPID's fd usage is checked against its soft `RLIMIT_NOFILE` (e.g. `easytier.service`); use `docker:<container>` for containerized EasyTier. Linux only |
 | `--fd-threshold` | 70 | fd usage percentage of the soft limit treated as failure |
 
 ## How It Works
